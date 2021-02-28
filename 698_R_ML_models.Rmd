@@ -1,0 +1,405 @@
+---
+title: "Untitled"
+author: "Dr. Jose Mawyin"
+date: "12/10/2020"
+output:
+  prettydoc::html_pretty:
+    theme: architec
+    toc: true
+    #toc_float: true
+    fig_caption: true
+    toc_collapsed: false
+    toc_depth: 5
+    highlight: github
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+knitr::opts_chunk$set(warning = FALSE)
+knitr::opts_chunk$set(message = FALSE)
+knitr::opts_chunk$set(cache=TRUE)
+#install.packages("beepr")
+#install.packages(c("VIM", "rpart", "randomForest", "party", "gbm", "Cubist", "rpart.plot"))
+#install.packages("PerformanceAnalytics")
+
+library(tidyr)
+
+library(VIM)
+library(Hmisc)
+#Corr Plot
+library(corrplot)
+library(RColorBrewer)
+library(ggcorrplot)
+library(PerformanceAnalytics)
+library(magrittr)
+library(reshape2)
+library(ggplot2)
+
+#Data Imputation
+library(mice)
+
+#Train model
+library(caret)
+
+#Timing
+library(tictoc)
+
+#Tree Based Plots
+library(rpart)
+library(randomForest)
+library(party)
+
+library(gbm)
+#library(pryr)
+library(Cubist)
+library(Hmisc)
+library(mice)
+library(magrittr)
+#library(partykit)
+library(rpart.plot)
+
+library(beepr)
+
+#Parallel Processing
+library(doParallel)
+cl <- makePSOCKcluster(4)
+registerDoParallel(cl)
+#stopCluster(cl);registerDoSEQ()
+set.seed(1978)
+```
+
+```{r, eval = TRUE}
+hist.data.frame <- function(x, ..., colors=rainbow(ncol(x))) {
+    col<-1
+    hist<-function(...) {
+        graphics::hist(..., col=colors[col])
+        col <<- col+1
+    }
+    f <- Hmisc:::hist.data.frame
+    environment(f) <- environment()
+    f(x,...)
+}
+```
+
+## Predicting District Yield
+
+
+The following data frames contain per region weather parameters at a half hour resolution for a 7 day period and for all 300+ districts.
+```{r Data_read}
+data_loc <- '/Users/josemawyin/Library/Mobile Documents/com~apple~CloudDocs/Data Science Masters /698/Data/Predictor_Response_11-11to11-18.csv'
+data_loc2 <- '/Users/josemawyin/Library/Mobile Documents/com~apple~CloudDocs/Data Science Masters /698/Data/Predictor_Response_11-18to11-25.csv'
+
+data_loc3 <- '/Users/josemawyin/Library/Mobile Documents/com~apple~CloudDocs/Data Science Masters /698/Data/Predictor_Response_11-25to11-30.csv'
+pv_ac_weather_df <- read.csv(file = data_loc)
+pv_ac_weather_df_2 <- read.csv(file = data_loc2)
+pv_ac_weather_df_3 <- read.csv(file = data_loc3)
+dim(pv_ac_weather_df); dim(pv_ac_weather_df_2); dim(pv_ac_weather_df_3)
+```
+
+
+
+```{r pressure, echo=FALSE}
+head(pv_ac_weather_df)
+dim(pv_ac_weather_df)
+#pv_ac_weather_df_s <- sample(pv_ac_weather_df, 1000)
+pv_ac_weather_df_s <- pv_ac_weather_df[sample(nrow(pv_ac_weather_df), 10000, replace = FALSE, prob = NULL),]
+dim(pv_ac_weather_df_s)
+```
+
+```{r}
+pv_ac_weather_columns <- c("hourly_AC_Power","temp_air", "wind_speed", "total_clouds", "low_clouds","mid_clouds", "high_clouds","Latitude","Longitude","Daily_Hour","Day_of_Year")
+#pv_ac_weather_columns <- c("hourly_AC_Power","temp_air", "wind_speed", "ghi", "dni","dhi", "total_clouds", "low_clouds","mid_clouds", "high_clouds","Latitude","Longitude","poa_global","poa_direct","poa_diffuse","poa_sky_diffuse","poa_ground_diffuse","Cell_temp","Daily_Hour","Day_of_Year")
+pv_ac_weather_reduced <- pv_ac_weather_df_s[pv_ac_weather_columns]
+head(pv_ac_weather_reduced)
+```
+
+```{r}
+colSums(is.na(pv_ac_weather_reduced))
+```
+```{r, eval = TRUE}
+hist(pv_ac_weather_reduced[,2:10])
+```
+
+```{r}
+corr <- model.matrix(~0+., data=pv_ac_weather_reduced) %>% 
+  cor(use="pairwise.complete.obs")
+
+
+ggplot(melt(corr), aes(Var1, Var2, fill=value)) +
+  geom_tile(height=0.8, width=0.8) +
+  scale_fill_gradient2(low="blue", mid="white", high="red") +
+  theme_minimal() +
+  coord_equal() +
+  labs(x="",y="",fill="Corr") +
+  theme(axis.text.x=element_text(size=8, angle=90, vjust=1, hjust=1, 
+                                 margin=ggplot2::margin(-3,0,0,0)),
+        axis.text.y=element_text(size=8, margin=ggplot2::margin(0,-3,0,0)),
+        panel.grid.major=element_blank()) +
+  ggtitle("Correlation Plot of Variables in District Yield Prediction") +
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+```{r}
+df <- pv_ac_weather_reduced
+
+
+#Creating Test and Training Set
+trainIndex <- createDataPartition(df$hourly_AC_Power, p = .8, 
+                                  list = FALSE, 
+                                  times = 1)
+df_Train <- df[ trainIndex,]
+df_Test  <- df[-trainIndex,]
+```
+
+
+```{r}
+tic()
+#Linear Regression
+lm_model <- train(
+  hourly_AC_Power~., data = df_Train, method = "lm")
+
+cat("\nLinear Regression training time:\n")
+toc()
+lm_predictions <- lm_model %>% predict(df_Test)
+# Model performance metrics
+lm_accuracy <- data.frame( 
+  Model = "Linear Regression",
+  RMSE = caret::RMSE(lm_predictions, df_Test$hourly_AC_Power),
+  Rsquare = caret::R2(lm_predictions, df_Test$hourly_AC_Power)
+)
+beep(2)
+#==================
+#knn
+tic()
+knnModel <- train(hourly_AC_Power~., data = df_Train,
+                  method = "knn",
+                  preProc = c("center", "scale"),
+                  tuneLength = 10)
+cat("\nknn training time:\n")
+toc();beep(2)
+knnModel_predictions <- knnModel %>% predict(df_Test)
+# Model performance metrics
+knn_Accuracy <- data.frame(
+  Model = "k-Nearest Neighbors",
+  RMSE = caret::RMSE(knnModel_predictions,df_Test$hourly_AC_Power),
+  Rsquare = caret::R2(knnModel_predictions,df_Test$hourly_AC_Power))
+#==================
+tic()
+metric <- "RMSE"
+control <- trainControl(method="repeatedcv", number=10, repeats=3, search="grid")
+
+tunegrid <- expand.grid(.mtry=c(1:15))
+rf_grid <- train(hourly_AC_Power ~ ., data = df_Train, 
+                       method="rf", metric=metric, tuneGrid=tunegrid, trControl=control)
+beep('ping')
+#Random Forest predictions
+rf_predictions <- rf_grid %>% predict(df_Test)
+# Model performance metrics
+rf_accuracy <- data.frame( 
+  Model = "Random Forest Grid",
+  RMSE = caret::RMSE(rf_predictions, df_Test$hourly_AC_Power),
+  Rsquare = caret::R2(rf_predictions, df_Test$hourly_AC_Power)
+)
+cat("\nRandom Forest training time:\n")
+toc()
+beep(2)
+```
+
+
+
+
+```{r}
+all_model_accuracy <- rbind(lm_accuracy,knn_Accuracy,rf_accuracy)
+all_model_accuracy
+```
+
+```{r}
+All_predictions <- cbind(lm_predictions,knnModel_predictions,rf_predictions) %>% as.data.frame()
+All_predictions <- cbind(All_predictions,df_Test$hourly_AC_Power)
+names(All_predictions)[names(All_predictions) == 'df_Test$hourly_AC_Power'] <- "Hourly_AC_Power"
+head(All_predictions)
+#Melting all column values together using PH as index
+df.m <- melt(All_predictions, "Hourly_AC_Power")
+names(df.m)[names(df.m) == 'variable'] <- "Model"
+head(df.m)
+
+ggplot(df.m, aes(value, Hourly_AC_Power,colour = Model)) + 
+  geom_point() + 
+  facet_wrap(~Model, scales = "free", ncol = 2) +
+  geom_abline() +coord_cartesian(xlim = c(-0.1, 0.4), ylim = c(-0.1, 0.4)) + #stat_density_2d(aes(fill = ..level..), geom="polygon")+
+  ggtitle("Predicted Vs Observed Solar Yield (Watt/Watt-peak) - 10000 Samples")+
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+```{r}
+ggplot(df.m, aes(value, Hourly_AC_Power,colour = Model)) + 
+  geom_point() + 
+  facet_wrap(~Model, scales = "free", ncol = 2) +
+  geom_abline() +coord_cartesian(xlim = c(-0.1, 0.4), ylim = c(-0.1, 0.4)) + #stat_density_2d(aes(fill = ..level..), geom="polygon")+
+  ggtitle("Predicted Vs Observed Solar Yield (Watt/Watt-peak) - 1000 Samples")+
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+
+## Predicting Regional Generation Output
+
+
+Name of Regions in the District Yield Data Set:
+
+"North East"               "North West"               "Yorkshire and The Humber" "East Midlands"           
+ "West Midlands"            "South West"               "East of England"          "South East"              "London"   
+ 
+ Name of Regions in the Region Generation Output Data Set:
+ 
+ "NATIONAL"              "Eastern England"       "East Midlands"         "London"                "West Midlands"        
+ "North Eastern England" "North Western England" "South Eastern England" "Southern England"      "South Western England"
+"Yorkshire"  
+
+
+```{r}
+Region_name <- "North West"    
+#============= Adding District Yields
+pv_ac_region_reduced <- pv_ac_weather_df
+pv_ac_region_reduced <- filter(pv_ac_region_reduced, Region == Region_name)
+pv_ac_region_columns <- c("TIMESTAMP","District",  "hourly_AC_Power")
+pv_ac_region_reduced <- pv_ac_region_reduced[pv_ac_region_columns]
+#head(pv_ac_region_reduced)
+pv_ac_region_reduced <- spread(pv_ac_region_reduced, District, hourly_AC_Power)
+one_week_pv_ac_region_reduced <- pv_ac_region_reduced
+#head(pv_ac_region_reduced); dim(pv_ac_region_reduced)
+#===========
+pv_ac_region_reduced_2 <- pv_ac_weather_df_2
+pv_ac_region_reduced_2 <- filter(pv_ac_region_reduced_2, Region == Region_name)
+pv_ac_region_columns <- c("TIMESTAMP","District",  "hourly_AC_Power")
+pv_ac_region_reduced_2 <- pv_ac_region_reduced_2[pv_ac_region_columns]
+#head(pv_ac_region_reduced)
+pv_ac_region_reduced_2 <- spread(pv_ac_region_reduced_2, District, hourly_AC_Power)
+#head(pv_ac_region_reduced_2); dim(pv_ac_region_reduced_2)
+two_weeks_pv_ac_region_reduced <- rbind(pv_ac_region_reduced,pv_ac_region_reduced_2)
+#===========
+pv_ac_region_reduced_3 <- pv_ac_weather_df_3
+pv_ac_region_reduced_3 <- filter(pv_ac_region_reduced_3, Region == Region_name)
+pv_ac_region_columns <- c("TIMESTAMP","District",  "hourly_AC_Power")
+pv_ac_region_reduced_3 <- pv_ac_region_reduced_3[pv_ac_region_columns]
+#head(pv_ac_region_reduced)
+pv_ac_region_reduced_3 <- spread(pv_ac_region_reduced_3, District, hourly_AC_Power)
+#============= Adding Regional Yields
+Region_name_Obs <- "North Western England"
+Shef_SS_region_output_loc = '/Users/josemawyin/Library/Mobile Documents/com~apple~CloudDocs/Data Science Masters /698/Data/All_region_daily_ob_11_11_to_11_18.csv'
+Shef_SS_region_output <- read.csv(file = Shef_SS_region_output_loc)
+Shef_SS_region_output_loc2 = '/Users/josemawyin/Library/Mobile Documents/com~apple~CloudDocs/Data Science Masters /698/Data/All_region_daily_ob_11_18_to_11_25.csv'
+Shef_SS_region_output_2 <- read.csv(file = Shef_SS_region_output_loc2)
+Shef_SS_region_output_loc3 = '/Users/josemawyin/Library/Mobile Documents/com~apple~CloudDocs/Data Science Masters /698/Data/All_region_daily_ob_11_25_to_11_30.csv'
+Shef_SS_region_output_3 <- read.csv(file = Shef_SS_region_output_loc3)
+#Shef_SS_region_output <- rbind(Shef_SS_region_output,Shef_SS_region_output_2)
+Shef_SS_region_output <- filter(Shef_SS_region_output, Region_name == Region_name_Obs)
+one_week_Shef_SS_region_output <- Shef_SS_region_output
+#=======
+Shef_SS_region_output_2 <- filter(Shef_SS_region_output_2, Region_name == Region_name_Obs)
+two_weeks_Shef_SS_region_output <- rbind(Shef_SS_region_output,Shef_SS_region_output_2)
+#=======
+Shef_SS_region_output_3 <- filter(Shef_SS_region_output_3, Region_name == Region_name_Obs)
+dim(one_week_pv_ac_region_reduced); dim(one_week_Shef_SS_region_output)
+
+#=============
+train_df <- one_week_pv_ac_region_reduced[,-1] ;train_df$Region_gen <- one_week_Shef_SS_region_output$Generation
+#train_df <- two_weeks_pv_ac_region_reduced[,-1] ;train_df$Region_gen <- two_weeks_Shef_SS_region_output$Generation
+#head(train_df)
+df <- train_df
+
+
+#Creating Test and Training Set
+trainIndex <- createDataPartition(df$Region_gen, p = .8, 
+                                  list = FALSE, 
+                                  times = 1)
+df_Train <- df[ trainIndex,]
+df_Test  <- df[-trainIndex,]
+
+#========
+tic()
+#Linear Regression
+lm_model <- train(
+  Region_gen~., data = df_Train, method = "lm")
+
+cat("\nLinear Regression training time:\n")
+toc()
+lm_predictions <- lm_model %>% predict(df_Test)
+# Model performance metrics
+lm_accuracy <- data.frame( 
+  Model = "Linear Regression",
+  RMSE = caret::RMSE(lm_predictions, df_Test$Region_gen),
+  Rsquare = caret::R2(lm_predictions, df_Test$Region_gen)
+)
+#beep(2)
+#==================
+#knn
+tic()
+knnModel <- train(Region_gen~., data = df_Train,
+                  method = "knn",
+                  preProc = c("center", "scale"),
+                  tuneLength = 10)
+cat("\nknn training time:\n")
+toc();#beep(2)
+knnModel_predictions <- knnModel %>% predict(df_Test)
+# Model performance metrics
+knn_Accuracy <- data.frame(
+  Model = "k-Nearest Neighbors",
+  RMSE = caret::RMSE(knnModel_predictions,df_Test$Region_gen),
+  Rsquare = caret::R2(knnModel_predictions,df_Test$Region_gen))
+#==================
+tic()
+metric <- "RMSE"
+control <- trainControl(method="repeatedcv", number=10, repeats=3, search="grid")
+
+tunegrid <- expand.grid(.mtry=c(1:15))
+rf_grid <- train(Region_gen ~ ., data = df_Train, 
+                       method="rf", metric=metric, tuneGrid=tunegrid, trControl=control)
+#beep('ping')
+#Random Forest predictions
+rf_predictions <- rf_grid %>% predict(df_Test)
+# Model performance metrics
+rf_accuracy <- data.frame( 
+  Model = "Random Forest Grid",
+  RMSE = caret::RMSE(rf_predictions, df_Test$Region_gen),
+  Rsquare = caret::R2(rf_predictions, df_Test$Region_gen)
+)
+cat("\nRandom Forest training time:\n")
+toc()
+#beep(2)
+
+all_model_accuracy <- rbind(lm_accuracy,knn_Accuracy,rf_accuracy)
+all_model_accuracy
+
+All_predictions <- cbind(lm_predictions,knnModel_predictions,rf_predictions) %>% as.data.frame()
+All_predictions <- cbind(All_predictions,df_Test$Region_gen)
+names(All_predictions)[names(All_predictions) == 'df_Test$Region_gen'] <- "Region_gen"
+#head(All_predictions)
+#Melting all column values together using PH as index
+df.m <- melt(All_predictions, "Region_gen")
+names(df.m)[names(df.m) == 'variable'] <- "Model"
+#head(df.m)
+
+ggplot(df.m, aes(value, Region_gen,colour = Model)) + 
+  geom_point() + 
+  facet_wrap(~Model, scales = "free", ncol = 2) +
+  geom_abline() +#coord_cartesian(xlim = c(0, 700), ylim = c(0, 700)) + #stat_density_2d(aes(fill = ..level..), geom="polygon")+
+  ggtitle("Predicted Vs Observed Solar Yield (Watt/Watt-peak) - 10000 Samples")+
+  theme(plot.title = element_text(hjust = 0.5))
+
+rf_predictions_next_week <- rf_grid %>% predict(pv_ac_region_reduced_2)
+plot(rf_predictions_next_week, main = paste(Region_name , "Region : Observed (Green) Vs. Predicted (Red)"), ylab = 'Generation (GWh)',xlab = 'Time',col="red")
+lines(Shef_SS_region_output_2$Generation,col="green")
+beep(4)
+```
+
+
+Linear Regression	3.715098e+07	0.001017149		
+k-Nearest Neighbors	1.211324e+01	0.881977543		
+Random Forest Grid	1.481217e+01	0.861682798
+
+Linear Regression	5906.407254	0.003484721		
+k-Nearest Neighbors	8.456962	0.945825033		
+Random Forest Grid	8.327947	0.936611559	
+
+
+
